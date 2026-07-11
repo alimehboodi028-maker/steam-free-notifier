@@ -1,0 +1,35 @@
+name: Steam Free Notifier
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-steam:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests feedparser
+
+      - name: Run notifier script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        run: python steam_free_notifier.py
+
+      - name: Commit updated state file
+        run: |
+          git config --global user.name "steam-notifier-bot"
+          git config --global user.email "actions@github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "به‌روزرسانی وضعیت"
+          git push
