@@ -1,14 +1,13 @@
 """
-Steam Free Games & Points Shop Notifier -> Telegram Channel
+Steam Points Shop & Festival Notifier -> Telegram Channel
 =============================================================
 این اسکریپت به‌صورت دوره‌ای موارد زیر رو چک می‌کنه:
-  ۱) بازی‌هایی که «موقتاً» (نه دائمی) رایگان شدن (مثلاً تخفیف ۱۰۰٪)
-  ۲) آیتم‌های Points Shop استیم که رایگان شدن
-  ۳) جشنواره‌ها/رویدادهای استیم که معمولاً یه بج یا آیتم رایگان میدن
+  ۱) آیتم‌های Points Shop استیم که رایگان شدن
+  ۲) جشنواره‌ها/رویدادهای استیم که معمولاً یه بج یا آیتم رایگان میدن
 و برای هر مورد جدید، پیام به کانال تلگرام می‌فرسته.
 
-نکته مهم: این اسکریپت فقط چیزهایی رو اعلام می‌کنه که "تازه" رایگان شدن،
-نه بازی‌هایی که همیشه رایگان بودن (Free to Play دائمی).
+نکته: چک کردن «بازی‌های رایگان» از این اسکریپت حذف شده، چون برای اون بخش از
+یه سرویس جدا (IFTTT + فید IsThereAnyDeal) استفاده می‌کنیم.
 این کار با نگه‌داشتن یه حافظه (state.json) از قیمت‌های قبلی انجام می‌شه.
 """
 
@@ -26,7 +25,6 @@ import feedparser
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@your_channel_username")
 
-STEAM_COUNTRY_CODE = "us"     # کشور مبنای قیمت‌گذاری (us چون همیشه در دسترسه)
 CHECK_INTERVAL_SECONDS = 30 * 60   # هر ۳۰ دقیقه یک‌بار چک می‌کنه
 
 STATE_FILE = "state.json"
@@ -43,7 +41,6 @@ def load_state():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {
-        "game_prices": {},       # {appid: last_seen_final_price_in_cents}
         "notified_points_items": [],
         "notified_news_ids": [],
     }
@@ -74,61 +71,13 @@ def send_telegram_message(text):
 
 
 # ---------------------------------------------------------------------------
-# بخش ۱: چک کردن بازی‌هایی که موقتاً رایگان شدن (تخفیف ۱۰۰٪)
-# ---------------------------------------------------------------------------
-def check_free_games(state):
-    """
-    از featuredcategories استفاده می‌کنیم که لیست specials رو برمی‌گردونه.
-    اگه final_price == 0 ولی original_price > 0 باشه، یعنی موقتاً رایگان شده
-    (نه اینکه از اول رایگان بوده).
-    """
-    url = "https://store.steampowered.com/api/featuredcategories"
-    params = {"cc": STEAM_COUNTRY_CODE, "l": "english"}
-
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        data = resp.json()
-    except Exception as e:
-        log.error("خطا در گرفتن دیتای specials: %s", e)
-        return
-
-    specials = data.get("specials", {}).get("items", [])
-    prices = state["game_prices"]
-
-    for item in specials:
-        appid = str(item.get("id"))
-        name = item.get("name", "نامشخص")
-        final_price = item.get("final_price", None)
-        original_price = item.get("original_price", None)
-        discount_pct = item.get("discount_percent", 0)
-
-        if final_price is None or original_price is None:
-            continue
-
-        is_now_free = final_price == 0
-        was_originally_paid = original_price > 0
-
-        if is_now_free and was_originally_paid:
-            last_price = prices.get(appid)
-            if last_price != 0:
-                link = f"https://store.steampowered.com/app/{appid}"
-                msg = (
-                    f"🎁 <b>بازی رایگان شد!</b>\n\n"
-                    f"🎮 {name}\n"
-                    f"💯 تخفیف: {discount_pct}٪\n"
-                    f"🔗 {link}"
-                )
-                send_telegram_message(msg)
-                log.info("اعلام شد: %s رایگان شد", name)
-
-        prices[appid] = final_price
-
-    state["game_prices"] = prices
-
-
-# ---------------------------------------------------------------------------
 # انکودر و دیکودر دستی پروتوباف (بدون نیاز به کتابخونه خارجی)
 # ---------------------------------------------------------------------------
+# استیم برای سرویس Points Shop از پروتوباف استفاده می‌کنه، نه JSON.
+# این چند تابع، حداقل چیزی که برای ساختن درخواست و خوندن جواب لازمه رو
+# پیاده‌سازی می‌کنن. این بخش با تحلیل دستی یه نمونه پاسخ واقعی از استیم
+# نوشته شده، پس اگه یه روز استیم فرمتش رو عوض کنه، ممکنه نیاز به اصلاح داشته باشه.
+
 def _encode_varint(n):
     out = bytearray()
     while True:
@@ -173,6 +122,7 @@ def _read_varint(data, pos):
 
 
 def _parse_message(data):
+    """خروجی: دیکشنری از شماره فیلد -> لیستی از مقادیرش (چون فیلدهای تکراری ممکنه چند بار بیان)"""
     result = {}
     pos = 0
     while pos < len(data):
@@ -213,11 +163,11 @@ def _get_str(fields, num, default=""):
 
 
 def _build_query_reward_items_request(appid, count=100, cursor="", language="english"):
-    parts = _encode_varint_field(1, appid)
-    parts += _encode_string_field(4, language)
-    parts += _encode_varint_field(5, count)
+    parts = _encode_varint_field(1, appid)           # appids (repeated uint32)
+    parts += _encode_string_field(4, language)         # language
+    parts += _encode_varint_field(5, count)             # count
     if cursor:
-        parts += _encode_string_field(6, cursor)
+        parts += _encode_string_field(6, cursor)        # cursor (صفحه‌بندی)
     return parts
 
 
@@ -276,6 +226,9 @@ def _parse_definition(raw):
 
 
 def _parse_batched_response(raw):
+    """
+    خروجی: لیستی از (لیست تعریف آیتم‌ها, next_cursor) برای هر زیر-درخواست
+    """
     f = _parse_message(raw)
     results = []
     for resp_bytes in f.get(1, []):
@@ -292,9 +245,9 @@ def _parse_batched_response(raw):
 
 
 # ---------------------------------------------------------------------------
-# بخش ۲: چک کردن آیتم‌های Points Shop که رایگان شدن
+# بخش ۱: چک کردن آیتم‌های Points Shop که رایگان شدن
 # ---------------------------------------------------------------------------
-POINTS_SHOP_MAX_PAGES_PER_APP = 5
+POINTS_SHOP_MAX_PAGES_PER_APP = 5   # جلوی حلقه بی‌نهایت رو می‌گیره
 
 def check_points_shop_items(state):
     try:
@@ -341,7 +294,7 @@ def check_points_shop_items(state):
         prev_price = prev_prices.get(defid_str)
 
         if not is_first_run and price == 0 and prev_price not in (None, 0):
-            link = "https://store.steampowered.com/points/shop/"
+            link = f"https://store.steampowered.com/points/shop/app/{item['appid']}/reward/{defid}/"
             msg = (
                 f"🎁 <b>یه آیتم پوینت‌شاپ رایگان شد!</b>\n\n"
                 f"🏷️ {item['name']}\n"
@@ -357,16 +310,21 @@ def check_points_shop_items(state):
     if not is_first_run:
         brand_new_starts = new_time_starts - known_time_starts
         for ts in brand_new_starts:
-            names = [it["name"] for it in all_items.values() if it["time_start"] == ts]
-            if len(names) >= 2:
-                sample = "، ".join(names[:5])
+            new_group_items = [
+                (defid, it) for defid, it in all_items.items() if it["time_start"] == ts
+            ]
+            if len(new_group_items) >= 2:
+                lines = []
+                for defid, it in new_group_items[:5]:
+                    item_link = f"https://store.steampowered.com/points/shop/app/{it['appid']}/reward/{defid}/"
+                    lines.append(f"🏷️ {it['name']}\n{item_link}")
+                items_block = "\n\n".join(lines)
                 msg = (
                     f"🏆 <b>یه کالکشن/رویداد جدید به پوینت‌شاپ اضافه شد!</b>\n\n"
-                    f"🏷️ نمونه آیتم‌ها: {sample}\n"
-                    f"🔗 https://store.steampowered.com/points/shop/"
+                    f"{items_block}"
                 )
                 send_telegram_message(msg)
-                log.info("اعلام شد: کالکشن جدید (%d آیتم)", len(names))
+                log.info("اعلام شد: کالکشن جدید (%d آیتم)", len(new_group_items))
 
     state["points_item_prices"] = prev_prices
     state["points_known_time_starts"] = list(known_time_starts | new_time_starts)
@@ -376,7 +334,7 @@ def check_points_shop_items(state):
 
 
 # ---------------------------------------------------------------------------
-# بخش ۳: چک کردن جشنواره‌ها/رویدادهای استیم
+# بخش ۲: چک کردن جشنواره‌ها/رویدادهای استیم (که معمولاً بج/آیتم رایگان میدن)
 # ---------------------------------------------------------------------------
 FESTIVAL_KEYWORDS = [
     "festival", "sale", "event", "free", "giveaway",
@@ -426,7 +384,6 @@ def main():
     state = load_state()
 
     try:
-        check_free_games(state)
         check_points_shop_items(state)
         check_steam_festivals(state)
     except Exception as e:
